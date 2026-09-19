@@ -46,11 +46,13 @@ namespace DarkAccomplice
                 special = room.Host;
 
                 // The host cannot be both the Mastermind and the accomplice (that would leave only one Dark).
-                // If another real player exists, hand the Mastermind role to them; SetMasterMind re-enters Pick
-                // through the patch with the new Mastermind.
+                // Hand the Mastermind role to another real player; if there is none (only dummies besides the host),
+                // to a dummy. SetMasterMind re-enters Pick through the patch with the new Mastermind.
                 if (special != null && special == mastermind)
                 {
                     var others = room.Players.Where(p => p != special && !p.IsDummy && !p.IsSpectator).ToList();
+                    if (others.Count == 0)
+                        others = room.Players.Where(p => p != special && !p.IsSpectator).ToList();
                     if (others.Count > 0)
                     {
                         SPlayer newMastermind = others[new Random().Next(others.Count)];
