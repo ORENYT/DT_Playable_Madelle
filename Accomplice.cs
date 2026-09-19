@@ -209,7 +209,7 @@ namespace DarkAccomplice
             try
             {
                 if (terminal == null) V("player list: no chat device found, message goes to the plain chat");
-                Tell(special, PlayerList(room));
+                Tell(special, PlayerList(room) + ". To shapeshift send !1 (or any other number) in the terminal");
             }
             finally
             {

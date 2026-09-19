@@ -35,7 +35,7 @@ To uninstall, delete `DarkAccomplice.dll` from `BepInEx\plugins`.
 
 ## How to play the accomplice
 
-1. When the round starts, about 5 seconds later the accomplice gets the list of players in a **terminal** (the in-game chat device). It looks like `Players: 1:Alice, 2:Bob, 3:Carol` and appears when you open any terminal. The numbers are the ones used by the command below.
+1. When the round starts, about 5 seconds later the accomplice gets the list of players in a **terminal** (the in-game chat device). It looks like `Players: 1:Alice, 2:Bob, 3:Carol. To shapeshift send !1 (or any other number) in the terminal` and appears when you open any terminal. The numbers are the ones used by the command below.
 2. **Shapeshift:** open a terminal and type `!N` in the **normal** (not secret) chat, where `N` is a player number from the list. `shapeshifted` appears in the terminal for **every** alive player, and everyone sees you as that player (skin and nickname). Typing your own number turns you back early.
    - Only the normal terminal chat works. The command is swallowed silently anywhere else (so nobody else sees it), and an invalid number does nothing.
    - The list of players is sent only once, automatically. There is no manual `!help`.
