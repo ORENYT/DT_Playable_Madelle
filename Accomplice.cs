@@ -44,6 +44,22 @@ namespace DarkAccomplice
             if (Plugin.HostIsAccomplice.Value)
             {
                 special = room.Host;
+
+                // The host cannot be both the Mastermind and the accomplice (that would leave only one Dark).
+                // If another real player exists, hand the Mastermind role to them; SetMasterMind re-enters Pick
+                // through the patch with the new Mastermind.
+                if (special != null && special == mastermind)
+                {
+                    var others = room.Players.Where(p => p != special && !p.IsDummy && !p.IsSpectator).ToList();
+                    if (others.Count > 0)
+                    {
+                        SPlayer newMastermind = others[new Random().Next(others.Count)];
+                        newMastermind.Color = EPlayerColor.Dark;
+                        Plugin.Log.LogInfo($"Host was the Mastermind: '{newMastermind.Name}' becomes the Mastermind, the host stays the accomplice");
+                        room.SetMasterMind(newMastermind);
+                        return;
+                    }
+                }
             }
             else if (room.Players.Count(p => !p.IsDummy && !p.IsSpectator) >= Plugin.MinPlayers)
             {
@@ -473,7 +489,34 @@ namespace DarkAccomplice
             _formJob = TimeManager.Instance.PushSurvivalJob(duration, delegate { EndForm(me, auto: true); });
 
             Plugin.Log.LogInfo($"!{number}: shapeshifted, skin={me.PublicInfo.CharacterId} nick='{me.Name}', duration={duration}s");
-            Tell(me, "shapeshifted");
+            Announce(me, "shapeshifted");
+        }
+
+        /// <summary>
+        /// Writes a message into the terminal for EVERY alive player (not just the accomplice), the same way the game
+        /// relays chat device messages: sent to all alive real players and recorded in the device chat log,
+        /// so it is also replayed during the investigation.
+        /// </summary>
+        private static void Announce(SPlayer me, string text)
+        {
+            int device = _replyDeviceId > 0 ? _replyDeviceId : _lastDeviceId;
+            Plugin.Log.LogInfo($"[to all] {text} (terminal {device})");
+            if (device <= 0)
+            {
+                Tell(me, text); // should not happen: commands only come from a terminal
+                return;
+            }
+
+            var msg = new S_CHAT_MESSAGE
+            {
+                Type = EChatType.DeviceChat,
+                Text = text,
+                PlayerId = 0,
+                DeviceId = device,
+                Time = TimeManager.Instance.SurviveTime
+            };
+            Server.Game.Replicator.AliveReal(msg);
+            GameRoom.Instance.RecordDeviceChat(msg);
         }
 
         private static void EndForm(SPlayer me, bool auto)
