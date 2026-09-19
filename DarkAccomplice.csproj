@@ -1,0 +1,82 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>DarkAccomplice</AssemblyName>
+    <RootNamespace>DarkAccomplice</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <DebugType>none</DebugType>
+    <!-- Deadly Trick install folder (needs BepInEx 5 installed in it). Override with: dotnet build -p:GamePath="D:\Games\Deadly Trick" -->
+    <GamePath Condition="'$(GamePath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Deadly Trick</GamePath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(GamePath)\BepInEx\core\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(GamePath)\BepInEx\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Types used in the signatures/fields of the game's Player class, so the compiler can resolve them -->
+    <Reference Include="spine-unity">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\spine-unity.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="spine-csharp">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\spine-csharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="DOTween">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\DOTween.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Google.Protobuf">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\Google.Protobuf.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="com.rlabrecque.steamworks.net">
+      <HintPath>$(GamePath)\DeadlyTrick_Data\Managed\com.rlabrecque.steamworks.net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- After a build, copy the DLL straight into BepInEx\plugins (skipped if that folder does not exist) -->
+  <Target Name="CopyToPlugins" AfterTargets="Build" Condition="Exists('$(GamePath)\BepInEx\plugins')">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GamePath)\BepInEx\plugins" />
+    <Message Importance="high" Text="Copied $(TargetFileName) to $(GamePath)\BepInEx\plugins" />
+  </Target>
+
+</Project>
