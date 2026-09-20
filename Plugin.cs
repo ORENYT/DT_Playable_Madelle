@@ -29,11 +29,22 @@ namespace DarkAccomplice
         internal static ManualLogSource Log;
 
         internal static ConfigEntry<bool> Enabled;
+        internal static ConfigEntry<bool> ForceSingleKill;
         internal static ConfigEntry<bool> HostIsAccomplice;
+        internal static ConfigEntry<bool> ShowExtendedOutput;
         internal static ConfigEntry<int> FreezeDuration;
         internal static ConfigEntry<int> FreezeCooldown;
         internal static ConfigEntry<int> TransformDuration;
         internal static ConfigEntry<int> TransformCooldown;
+
+        /// <summary>
+        /// Informational output of the mod (character table, commands, shapeshift, freeze, clue substitution ...).
+        /// Printed only when "Debug -> Show extended output" is on. Warnings and errors are always printed.
+        /// </summary>
+        internal static void Print(string message)
+        {
+            if (ShowExtendedOutput != null && ShowExtendedOutput.Value) Log.LogInfo(message);
+        }
 
         private void Awake()
         {
@@ -42,8 +53,15 @@ namespace DarkAccomplice
             Enabled = Config.Bind("General", "Enabled", true,
                 "Enable the mod (only has an effect when you are the host)");
 
+            ForceSingleKill = Config.Bind("General", "Force single kill", false,
+                "Force the Black kill limit to 1. By default the game allows a double kill in rounds with 6 or more players");
+
             HostIsAccomplice = Config.Bind("Debug", "Host Is Accomplice", false,
                 "TEST: the host always becomes the accomplice (starts as Madeline). Handy for solo testing together with SoloStart");
+
+            ShowExtendedOutput = Config.Bind("Debug", "Show extended output", false,
+                "Print the mod's information to the console and BepInEx log: characters table, commands, shapeshift, freeze, clues, [dbg] details. " +
+                "When off, only warnings and errors are printed");
 
             FreezeDuration = Config.Bind("Freeze Ability", "Duration Seconds", 10,
                 new ConfigDescription("How long the target stays frozen", new AcceptableValueRange<int>(1, 60)));

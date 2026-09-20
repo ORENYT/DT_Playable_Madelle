@@ -12,6 +12,8 @@ At the start of a round, besides the Mastermind, one random player becomes the a
 - Has a custom **freeze ability**: the target mark works like Louis' one, and the target is frozen like Seol's TimeStop (grey and unable to move) for a few seconds.
 - Can **shapeshift** into any other player (skin and nickname) for a limited time, using a command typed into a terminal (see below).
 
+While you are shapeshifted, the clues you leave on devices are recorded under the player you imitate (so they point at that player during the investigation).
+
 Shapeshift ends by itself when the time is up, when a body is found, or when the round ends; the accomplice then goes back to Madeline with the real nickname.
 
 ## Requirements
@@ -48,7 +50,9 @@ The config file is `BepInEx\config\com.oreny.darkaccomplice.cfg` (created after 
 | Section | Setting | Default | Meaning |
 |---|---|---|---|
 | General | `Enabled` | `true` | Turn the mod on or off (only matters if you are the host) |
+| General | `Force single kill` | `false` | Force the Black kill limit to 1 (the game gives a double kill in rounds with 6 or more players) |
 | Debug | `Host Is Accomplice` | `false` | The host always becomes the accomplice and starts as Madeline (for solo testing) |
+| Debug | `Show extended output` | `false` | Print the mod's information (character table, commands, shapeshift, freeze, clues) to the console and the BepInEx log. Warnings and errors are always printed |
 | Freeze Ability | `Duration Seconds` | `10` | How long the target stays frozen |
 | Freeze Ability | `Cooldown Seconds` | `45` | Ability cooldown |
 | Transform | `Duration Seconds` | `30` | How long a shapeshift lasts |

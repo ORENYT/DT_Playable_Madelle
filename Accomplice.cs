@@ -27,10 +27,10 @@ namespace DarkAccomplice
             return p != null && SpecialId != None && p.PublicInfo != null && p.PublicInfo.PlayerId == SpecialId;
         }
 
-        /// <summary>Verbose log line (always on; marked with [dbg]).</summary>
+        /// <summary>Detail log line marked with [dbg] (printed only when "Show extended output" is on).</summary>
         internal static void V(string message)
         {
-            Plugin.Log.LogInfo("[dbg] " + message);
+            Plugin.Print("[dbg] " + message);
         }
 
         // ---------- picking the accomplice ----------
@@ -57,7 +57,7 @@ namespace DarkAccomplice
                     {
                         SPlayer newMastermind = others[new Random().Next(others.Count)];
                         newMastermind.Color = EPlayerColor.Dark;
-                        Plugin.Log.LogInfo($"Host was the Mastermind: '{newMastermind.Name}' becomes the Mastermind, the host stays the accomplice");
+                        Plugin.Print($"Host was the Mastermind: '{newMastermind.Name}' becomes the Mastermind, the host stays the accomplice");
                         room.SetMasterMind(newMastermind);
                         return;
                     }
@@ -76,7 +76,7 @@ namespace DarkAccomplice
                 SpecialId = special.PublicInfo.PlayerId;
                 _realName = special.Name;
                 special.Color = EPlayerColor.Dark;
-                Plugin.Log.LogInfo($"Accomplice = pid {SpecialId} '{special.Name}' (host={special == room.Host}), mastermind = '{mastermind?.Name}'");
+                Plugin.Print($"Accomplice = pid {SpecialId} '{special.Name}' (host={special == room.Host}), mastermind = '{mastermind?.Name}'");
             }
             else
             {
@@ -97,9 +97,26 @@ namespace DarkAccomplice
             _formJob?.Kill();
             _formJob = null;
             _formActive = false;
+            _formTargetId = 0;
             _formEndTick = 0;
             _cooldownEndTick = 0;
             _lastDeviceId = -1;
+        }
+
+        /// <summary>
+        /// PlayerId a clue is recorded under (see Device.RecordLastUsingPlayer). Clues are stored by PlayerId only and the
+        /// clients resolve name and picture from it when the clue is viewed, so while the accomplice is shapeshifted his
+        /// clues are recorded under the player he imitates. Otherwise they would always point at Madeline.
+        /// </summary>
+        internal static int ClueOwnerId(SPlayer p)
+        {
+            int own = p.PublicInfo.PlayerId;
+            if (_formActive && _formTargetId > 0 && IsSpecial(p))
+            {
+                V($"clue recorded under pid {_formTargetId} (imitated player) instead of pid {own}");
+                return _formTargetId;
+            }
+            return own;
         }
 
         // ---------- round flow hooks ----------
@@ -118,13 +135,13 @@ namespace DarkAccomplice
         /// <summary>Console table "number - name - character" (the number is the one used in the "!N" command).</summary>
         private static void LogCharacterTable(GameRoom room)
         {
-            Plugin.Log.LogInfo("Characters (number - name - character):");
+            Plugin.Print("Characters (number - name - character):");
             for (int i = 0; i < room.Players.Count; i++)
             {
                 SPlayer p = room.Players[i];
                 int id = p.PublicInfo.CharacterId;
                 CharacterData cd = Managers.Data.CharacterDic.Values.FirstOrDefault(c => c.DataId == id);
-                Plugin.Log.LogInfo($"  {i + 1} - {p.Name} - {(cd != null ? cd.Type.ToString() : "?")}");
+                Plugin.Print($"  {i + 1} - {p.Name} - {(cd != null ? cd.Type.ToString() : "?")}");
             }
         }
 
@@ -139,7 +156,7 @@ namespace DarkAccomplice
             SPlayer special = room.Players.FirstOrDefault(IsSpecial);
             if (special == null) return;
 
-            Plugin.Log.LogInfo("Round over: ending the shapeshift before the results screen");
+            Plugin.Print("Round over: ending the shapeshift before the results screen");
             EndForm(special, auto: true);
         }
 
@@ -151,7 +168,7 @@ namespace DarkAccomplice
             SPlayer special = room.Players.FirstOrDefault(IsSpecial);
             if (special == null) return;
 
-            Plugin.Log.LogInfo("Body found: ending the shapeshift");
+            Plugin.Print("Body found: ending the shapeshift");
             EndForm(special, auto: true);
         }
 
@@ -237,7 +254,7 @@ namespace DarkAccomplice
                 if (p != null && !p.IsDummy && p.Name != real)
                 {
                     Rename(room, p, real);
-                    Plugin.Log.LogInfo($"Nickname restored: '{real}'");
+                    Plugin.Print($"Nickname restored: '{real}'");
                 }
             });
         }
@@ -280,12 +297,12 @@ namespace DarkAccomplice
             SPlayer target = room.AlivePlayers.FirstOrDefault(p => p.PublicInfo.PlayerId == pkt.TargetId);
             if (target == null || target == owner)
             {
-                Plugin.Log.LogInfo($"Freeze: no valid target (targetId={pkt.TargetId}), skipped");
+                Plugin.Print($"Freeze: no valid target (targetId={pkt.TargetId}), skipped");
                 return;
             }
             if (target.BuffComponent.HasBuff(EBuffType.TheWorld))
             {
-                Plugin.Log.LogInfo($"Freeze: '{target.Name}' is already frozen, skipped");
+                Plugin.Print($"Freeze: '{target.Name}' is already frozen, skipped");
                 return;
             }
 
@@ -294,7 +311,7 @@ namespace DarkAccomplice
             float dist = (float)Math.Sqrt(Util.CalculateDistanceSquared(owner.PublicInfo.Pos, target.PublicInfo.Pos));
             if (dist > maxDist)
             {
-                Plugin.Log.LogInfo($"Freeze: '{target.Name}' is too far ({dist:F0} > {maxDist:F0}), skipped");
+                Plugin.Print($"Freeze: '{target.Name}' is too far ({dist:F0} > {maxDist:F0}), skipped");
                 return;
             }
 
@@ -306,7 +323,7 @@ namespace DarkAccomplice
             if (CoolSkillMethod != null) CoolSkillMethod.Invoke(sc, new object[] { cooldown });
             else Plugin.Log.LogWarning("Freeze: SkillComponent.CoolSkill not found, cooldown was not started");
 
-            Plugin.Log.LogInfo($"Freeze: '{target.Name}' (pid {target.PublicInfo.PlayerId}) frozen for {seconds}s (dist {dist:F0}), cooldown {cooldown}s");
+            Plugin.Print($"Freeze: '{target.Name}' (pid {target.PublicInfo.PlayerId}) frozen for {seconds}s (dist {dist:F0}), cooldown {cooldown}s");
         }
 
         // ---------- start skin ----------
@@ -337,7 +354,7 @@ namespace DarkAccomplice
 
             _ownCharacterId = special.PublicInfo.CharacterId; // remember the accomplice's own pick
             SetSkin(special, cd.DataId);
-            Plugin.Log.LogInfo($"Accomplice starts with skin {cd.Type} (id {cd.DataId}), own pick was id {_ownCharacterId}");
+            Plugin.Print($"Accomplice starts with skin {cd.Type} (id {cd.DataId}), own pick was id {_ownCharacterId}");
         }
 
         /// <summary>
@@ -416,7 +433,7 @@ namespace DarkAccomplice
             V($"!{number}: players={players.Count}, list=[{PlayerList(room)}]");
             if (number < 1 || number > players.Count)
             {
-                Plugin.Log.LogInfo($"!{number}: no such player, skipped");
+                Plugin.Print($"!{number}: no such player, skipped");
                 return;
             }
 
@@ -426,7 +443,7 @@ namespace DarkAccomplice
             // Dummies are a fine target: you can copy players who left, as well as test bots.
             if (target != me && target.IsSpectator)
             {
-                Plugin.Log.LogInfo($"!{number}: target is a spectator, skipped");
+                Plugin.Print($"!{number}: target is a spectator, skipped");
                 return;
             }
 
@@ -434,7 +451,7 @@ namespace DarkAccomplice
             // chat device, Hide, Carry ...) does not matter. Only state transitions and host migration are blocked.
             if (room.IsMigrating || room.IsTransitioning)
             {
-                Plugin.Log.LogInfo($"!{number}: blocked (migrating={room.IsMigrating}, transitioning={room.IsTransitioning})");
+                Plugin.Print($"!{number}: blocked (migrating={room.IsMigrating}, transitioning={room.IsTransitioning})");
                 return;
             }
 
@@ -447,7 +464,7 @@ namespace DarkAccomplice
             {
                 if (!_formActive)
                 {
-                    Plugin.Log.LogInfo($"!{number}: own number, but not shapeshifted - skipped");
+                    Plugin.Print($"!{number}: own number, but not shapeshifted - skipped");
                     return;
                 }
                 EndForm(me, auto: false);
@@ -456,12 +473,12 @@ namespace DarkAccomplice
 
             if (_formActive)
             {
-                Plugin.Log.LogInfo($"!{number}: already shapeshifted ({Math.Max(0, _formEndTick - now)}s left) - skipped");
+                Plugin.Print($"!{number}: already shapeshifted ({Math.Max(0, _formEndTick - now)}s left) - skipped");
                 return;
             }
             if (now < _cooldownEndTick)
             {
-                Plugin.Log.LogInfo($"!{number}: on cooldown ({_cooldownEndTick - now}s left) - skipped");
+                Plugin.Print($"!{number}: on cooldown ({_cooldownEndTick - now}s left) - skipped");
                 return;
             }
 
@@ -471,6 +488,7 @@ namespace DarkAccomplice
         // ---------- shapeshift: lasts Duration seconds, then back to the base look, then a cooldown ----------
 
         private static bool _formActive;
+        private static int _formTargetId;      // PlayerId of the player the accomplice is currently imitating
         private static int _formEndTick;
         private static int _cooldownEndTick;   // in TimeManager.SurviveTime ticks (runs only during Survive, like skill cooldowns)
         private static JobElem _formJob;
@@ -485,12 +503,13 @@ namespace DarkAccomplice
 
             ApplyLook(room, me, skin, nick);
             _formActive = true;
+            _formTargetId = target.PublicInfo.PlayerId;
 
             int duration = Plugin.TransformDuration.Value;
             _formEndTick = TimeManager.Instance.SurviveTime + duration;
             _formJob = TimeManager.Instance.PushSurvivalJob(duration, delegate { EndForm(me, auto: true); });
 
-            Plugin.Log.LogInfo($"!{number}: shapeshifted, skin={me.PublicInfo.CharacterId} nick='{me.Name}', duration={duration}s");
+            Plugin.Print($"!{number}: shapeshifted, skin={me.PublicInfo.CharacterId} nick='{me.Name}', duration={duration}s");
             Announce(me, "shapeshifted");
         }
 
@@ -502,7 +521,7 @@ namespace DarkAccomplice
         private static void Announce(SPlayer me, string text)
         {
             int device = _replyDeviceId > 0 ? _replyDeviceId : _lastDeviceId;
-            Plugin.Log.LogInfo($"[to all] {text} (terminal {device})");
+            Plugin.Print($"[to all] {text} (terminal {device})");
             if (device <= 0)
             {
                 Tell(me, text); // should not happen: commands only come from a terminal
@@ -525,6 +544,7 @@ namespace DarkAccomplice
         {
             if (!_formActive) return;
             _formActive = false;
+            _formTargetId = 0;
             _formJob?.Kill();
             _formJob = null;
 
@@ -535,7 +555,7 @@ namespace DarkAccomplice
 
             int cooldown = Plugin.TransformCooldown.Value;
             _cooldownEndTick = TimeManager.Instance.SurviveTime + cooldown;
-            Plugin.Log.LogInfo($"Shapeshift ended ({(auto ? "time is up" : "manual")}); cooldown {cooldown}s");
+            Plugin.Print($"Shapeshift ended ({(auto ? "time is up" : "manual")}); cooldown {cooldown}s");
             // Nothing is written to the terminal here: it only ever gets the player list and "shapeshifted".
         }
 
@@ -617,7 +637,7 @@ namespace DarkAccomplice
                 }
             }
             room.MarkRosterDirty();
-            Plugin.Log.LogInfo($"Rename pid={pid} '{oldName}' -> '{p.Name}': LEAVE+ADD sent to {sent} client(s), " +
+            Plugin.Print($"Rename pid={pid} '{oldName}' -> '{p.Name}': LEAVE+ADD sent to {sent} client(s), " +
                                $"SPAWN to {spawned}, skipped {skipped} dummy/no-session (sharedWith={p.SharedPlayers.Count})");
         }
 
@@ -625,7 +645,7 @@ namespace DarkAccomplice
 
         internal static void Tell(SPlayer p, string text)
         {
-            Plugin.Log.LogInfo($"[to {p.Name}] {text}");
+            Plugin.Print($"[to {p.Name}] {text}");
             try
             {
                 if (_replyDeviceId > 0)

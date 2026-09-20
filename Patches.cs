@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Reflection;
+using System.Reflection.Emit;
 using HarmonyLib;
 using Protocol;
 using Server.Game;
@@ -114,6 +117,38 @@ namespace DarkAccomplice
         {
             try { Accomplice.OnSurviveStart(__instance); }
             catch (Exception e) { Plugin.Log.LogError($"OnSurviveStart failed: {e}"); }
+        }
+
+        // 9) Kill limit: the game gives Black 1 kill in rounds with fewer than 6 players and 2 (double kill) with 6 or more.
+        //    All users (weapon pickup, the limit sent to the client, the round log) read this getter, so overriding it is enough.
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.BlackKillLimit), MethodType.Getter)]
+        private static void AfterBlackKillLimit(ref int __result)
+        {
+            if (!Plugin.Enabled.Value || !Plugin.ForceSingleKill.Value || __result == 1) return;
+            Plugin.Print($"Kill limit forced to 1 (the game wanted {__result})");
+            __result = 1;
+        }
+
+        // 8) Clues: every device records who used it through Device.RecordLastUsingPlayer, keyed by PlayerId.
+        //    Replace "player.PublicInfo.PlayerId" with our lookup so a shapeshifted accomplice frames the imitated player.
+        private static readonly MethodInfo GetPublicInfo = AccessTools.PropertyGetter(typeof(SPlayer), "PublicInfo");
+        private static readonly MethodInfo GetPlayerId = AccessTools.PropertyGetter(typeof(PublicPlayerInfo), "PlayerId");
+        private static readonly MethodInfo ClueOwner = AccessTools.Method(typeof(Accomplice), nameof(Accomplice.ClueOwnerId));
+
+        [HarmonyTranspiler]
+        [HarmonyPatch(typeof(Server.Game.Device), "RecordLastUsingPlayer")]
+        private static IEnumerable<CodeInstruction> RecordClueTranspiler(IEnumerable<CodeInstruction> instructions)
+        {
+            var result = new CodeMatcher(instructions)
+                .MatchStartForward(new CodeMatch(OpCodes.Callvirt, GetPublicInfo), new CodeMatch(OpCodes.Callvirt, GetPlayerId))
+                .ThrowIfInvalid("Device.RecordLastUsingPlayer: 'player.PublicInfo.PlayerId' not found")
+                .Set(OpCodes.Call, ClueOwner)   // Player -> int
+                .Advance(1)
+                .RemoveInstruction()            // drop the now redundant get_PlayerId call
+                .InstructionEnumeration();
+            Plugin.Print("Device.RecordLastUsingPlayer: patched (shapeshifted clues)");
+            return result;
         }
 
         private static bool SafeHandle(SPlayer sender, string text, int deviceId, bool isSecret)
