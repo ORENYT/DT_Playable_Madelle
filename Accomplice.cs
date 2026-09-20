@@ -85,6 +85,46 @@ namespace DarkAccomplice
             }
         }
 
+        /// <summary>
+        /// The minimap draws every other player only for non-White players, and paints a pin black (and the name pink)
+        /// only for ids the client knows as "black" (KnownBlackIds). The client learns them solely from S_NOTIFY_BLACK,
+        /// which the game sends only Mastermind &lt;-&gt; Black. So the Mastermind and the accomplice have to be told about
+        /// each other explicitly. Note: a Dark client also shows the game's "has become the Shadow" notice for such a packet.
+        /// </summary>
+        private static void NotifyKnownBlack(SPlayer receiver, SPlayer teammate)
+        {
+            if (receiver == null || teammate == null || receiver.IsDummy || receiver.Session == null) return;
+            receiver.Session.Send(new S_NOTIFY_BLACK { PlayerId = teammate.PublicInfo.PlayerId, ByHand = false });
+            Plugin.Print($"'{receiver.Name}' now knows '{teammate.Name}' (pid {teammate.PublicInfo.PlayerId}) as a teammate");
+        }
+
+        /// <summary>A player just became Black (took the knife): the accomplice learns about them too.</summary>
+        internal static void OnBecameBlack(SPlayer black)
+        {
+            if (SpecialId == None) return;
+            var room = GameRoom.Instance;
+            if (room == null) return;
+
+            SPlayer accomplice = room.Players.FirstOrDefault(IsSpecial);
+            if (accomplice == null || accomplice == black || !accomplice.IsAlive) return;
+            NotifyKnownBlack(accomplice, black);
+        }
+
+        /// <summary>
+        /// The game shows the weapon (knife) and fusebox sabotage pins on the minimap only to the Mastermind
+        /// (S_SABOTAGE_MISSION). Mirror the same packet to the accomplice so they see the same pins.
+        /// </summary>
+        internal static void MirrorMissionPin(GameRoom room, ESchoolMission type, int deviceId, PosInfo pos, bool isAdd)
+        {
+            if (SpecialId == None || pos == null) return;
+
+            SPlayer accomplice = room.Players.FirstOrDefault(IsSpecial);
+            if (accomplice == null || accomplice == room.MasterMind || accomplice.IsDummy || accomplice.Session == null || !accomplice.IsAlive) return;
+
+            accomplice.Session.Send(new S_SABOTAGE_MISSION { MissionType = type, DeviceId = deviceId, Pos = pos.Clone(), IsAdd = isAdd });
+            Plugin.Print($"{type} pin {(isAdd ? "added" : "removed")} for '{accomplice.Name}' (device {deviceId})");
+        }
+
         internal static void Reset()
         {
             _helpSent = false;
@@ -233,6 +273,19 @@ namespace DarkAccomplice
             finally
             {
                 _replyDeviceId = saved;
+            }
+
+            // Right after the list is sent, the Mastermind and the accomplice learn about each other
+            // (black pin on the minimap, pink name).
+            SPlayer mastermind = room.MasterMind;
+            if (mastermind != null && mastermind != special)
+            {
+                NotifyKnownBlack(special, mastermind);   // the accomplice learns who the Mastermind is
+                NotifyKnownBlack(mastermind, special);   // the Mastermind learns who the accomplice is
+            }
+            else
+            {
+                V("teammate notification skipped (no separate Mastermind)");
             }
         }
 

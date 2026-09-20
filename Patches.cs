@@ -119,6 +119,25 @@ namespace DarkAccomplice
             catch (Exception e) { Plugin.Log.LogError($"OnSurviveStart failed: {e}"); }
         }
 
+        // 10) A player became Black: tell the accomplice (the game only tells the Mastermind and that Black to each other).
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(SPlayer), nameof(SPlayer.Color), MethodType.Setter)]
+        private static void AfterColorSet(SPlayer __instance, EPlayerColor value)
+        {
+            if (value != EPlayerColor.Black) return;
+            try { Accomplice.OnBecameBlack(__instance); }
+            catch (Exception e) { Plugin.Log.LogError($"OnBecameBlack failed: {e}"); }
+        }
+
+        // 11) Minimap pins: the game sends the knife and fusebox pins only to the Mastermind, mirror them to the accomplice.
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.SendSabotageMission))]
+        private static void AfterSendSabotageMission(GameRoom __instance, ESchoolMission type, int deviceId, PosInfo pos, bool isAdd)
+        {
+            try { Accomplice.MirrorMissionPin(__instance, type, deviceId, pos, isAdd); }
+            catch (Exception e) { Plugin.Log.LogError($"MirrorMissionPin failed: {e}"); }
+        }
+
         // 9) Kill limit: the game gives Black 1 kill in rounds with fewer than 6 players and 2 (double kill) with 6 or more.
         //    All users (weapon pickup, the limit sent to the client, the round log) read this getter, so overriding it is enough.
         [HarmonyPostfix]
