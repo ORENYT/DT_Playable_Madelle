@@ -134,8 +134,16 @@ namespace DarkAccomplice
             if (special == null || special == newBlack || special == mastermind || special.IsDummy || special.Session == null || !special.IsAlive) return;
 
             room.AlertMessage(special, ESystemMessageType.NewBlack);
-            Plugin.Print($"Knife handed off by '{mastermind.Name}': accomplice notified (no names)");
+            _knifeHandoffTime = TimeManager.Instance.SurviveTime;
+            Plugin.Print($"Knife handed off by '{mastermind.Name}': accomplice notified (no names), time recorded ({FormatSurviveTime(_knifeHandoffTime.Value)})");
         }
+
+        // Survive-time (seconds) the knife was last handed off by hand this round, or null if it never was.
+        // Reminded to her privately at the start of every trial (see OnTrialDiscuss) - the banner above only
+        // shows once, right when it happens, and by the time a trial starts she may not remember exactly when.
+        private static int? _knifeHandoffTime;
+
+        private static string FormatSurviveTime(int seconds) => $"{seconds / 60}:{seconds % 60:D2}";
 
         /// <summary>
         /// The game shows the weapon (knife) and fusebox sabotage pins on the minimap only to the Mastermind
@@ -175,26 +183,29 @@ namespace DarkAccomplice
             _offerOpen = false;
             _offerDone = false;
             _offerSerial++;
+            _colorChanged = false;
+            _knifeHandoffTime = null;
         }
 
-        // ---------- trial: "!r" reveals her team ----------
+        // ---------- trial: "!r" (red) / "!w" (white) - pick a side ----------
         //
-        // She stays Dark always and can never vote, full stop - blocked on the HOST regardless of anything
-        // client-side (see BeforeHandleTrialEvent in Patches.cs).
+        // Voting is blocked for her no matter which side she picks or does nothing - always, on the HOST,
+        // regardless of anything client-side (see BeforeHandleTrialEvent in Patches.cs).
 
         private const int SideChoiceSeconds = 60;
         private const int SideChoiceStepSeconds = 10;
 
-        private static bool _offerOpen;            // the offer window is open
+        private static bool _offerOpen;            // the choice window is open
         private static bool _offerDone;            // the offer was already made in this trial
-        private static int _offerSerial;           // invalidates the window/reminders of an earlier trial or a finished reveal
+        private static int _offerSerial;           // invalidates the window/reminders of an earlier trial or a finished choice
+        private static bool _colorChanged;          // her real (server) color was moved off Dark this trial and needs restoring
 
         /// <summary>
-        /// The trial discussion has started: within the time limit the accomplice may type "!r" to learn who
-        /// her team is. There is no way to instantly side with White either - "!r" only ever reveals her team,
-        /// it never changes her color, her vote rights (always blocked regardless, see BeforeHandleTrialEvent
-        /// in Patches.cs) or how the round scores her. A reminder repeats every 10 seconds; if time runs out
-        /// with no input, nothing happens.
+        /// The trial discussion has started: within the time limit the accomplice may pick a side.
+        /// "!r" (red) stays Dark and just reveals her team (Shadow + Mastermind, private line + native banners).
+        /// "!w" (white) makes her genuinely White (GameRoom.ApplyTeamResults then scores her with the White
+        /// team) - no reveal in that case. Either way she is still hard-blocked from voting. A reminder
+        /// repeats every 10 seconds; if time runs out with no input, nothing happens (stays Dark).
         /// </summary>
         internal static void OnTrialDiscuss(GameRoom room)
         {
@@ -203,7 +214,7 @@ namespace DarkAccomplice
             SPlayer special = room.Players.FirstOrDefault(IsSpecial);
             if (special == null || !special.IsAlive || special.IsDummy || special.Session == null)
             {
-                V("team reveal offer skipped (no living real accomplice)");
+                V("side choice offer skipped (no living real accomplice)");
                 return;
             }
 
@@ -211,109 +222,147 @@ namespace DarkAccomplice
             _offerOpen = true;
             int serial = ++_offerSerial;
 
-            AnnounceReveal(room, special, SideChoiceSeconds);
-            ScheduleRevealReminder(room, serial, SideChoiceSeconds);
+            // Private reminder, only for her: if the knife was ever handed off by hand this round, the banner
+            // for it (OnKnifeHandedOff) only showed once, in the moment - by trial time she may not remember
+            // exactly when. Nobody else sees this.
+            if (_knifeHandoffTime.HasValue) Tell(special, $"Knife handoff at {FormatSurviveTime(_knifeHandoffTime.Value)}");
+            else Tell(special, "No knife handoff this round.");
+
+            AnnounceSideChoice(room, special, SideChoiceSeconds);
+            ScheduleSideReminder(room, serial, SideChoiceSeconds);
         }
 
-        private static void AnnounceReveal(GameRoom room, SPlayer special, int secondsRemaining)
+        private static void AnnounceSideChoice(GameRoom room, SPlayer special, int secondsRemaining)
         {
             // Normal (trial) chat, broadcast to everyone, shown as coming from the accomplice.
             room.Broadcast(new S_CHAT_MESSAGE
             {
                 Type = EChatType.NormalChat,
-                Text = $"INPUT !r to learn who your team is. {secondsRemaining} SECONDS REMAINING",
+                Text = $"INPUT !r to choose RED or !w to choose WHITE {secondsRemaining} SECONDS REMAINING",
                 PlayerId = special.PublicInfo.PlayerId,
                 IsDead = false
             });
-            Plugin.Print($"Team reveal reminder for '{special.Name}': {secondsRemaining}s left");
+            Plugin.Print($"Side choice reminder for '{special.Name}': {secondsRemaining}s left");
         }
 
-        private static void ScheduleRevealReminder(GameRoom room, int serial, int secondsLeft)
+        private static void ScheduleSideReminder(GameRoom room, int serial, int secondsLeft)
         {
             room.PushAfter(SideChoiceStepSeconds * 1000, delegate
             {
-                if (serial != _offerSerial || !_offerOpen) return; // trial over, or already used
+                if (serial != _offerSerial || !_offerOpen) return; // trial over, or already chosen
 
                 int remaining = secondsLeft - SideChoiceStepSeconds;
                 if (remaining <= 0)
                 {
-                    _offerOpen = false;
-                    V("team reveal offer: time is up, nothing happens");
+                    SPlayer expired = room.Players.FirstOrDefault(IsSpecial);
+                    if (expired == null || !expired.IsAlive || expired.Session == null)
+                    {
+                        _offerOpen = false;
+                        V("side choice: time is up, accomplice no longer available, nothing happens");
+                        return;
+                    }
+                    // No manual choice in time: pick one at random instead of leaving her Dark with no reveal.
+                    // Goes through the exact same ChooseSide as a manual "!r"/"!w" - same reveal, same banners.
+                    bool red = new Random().Next(2) == 0;
+                    V($"side choice: time is up, randomly picked {(red ? "red" : "white")}");
+                    ChooseSide(expired, red);
                     return;
                 }
 
                 SPlayer special = room.Players.FirstOrDefault(IsSpecial);
                 if (special == null || !special.IsAlive || special.Session == null)
                 {
-                    V("team reveal reminder skipped (accomplice no longer available)");
+                    V("side choice reminder skipped (accomplice no longer available)");
                     return;
                 }
-                AnnounceReveal(room, special, remaining);
-                ScheduleRevealReminder(room, serial, remaining);
+                AnnounceSideChoice(room, special, remaining);
+                ScheduleSideReminder(room, serial, remaining);
             });
         }
 
-        // Gap between the Shadow banner and the Mastermind banner she gets in a row - see ChooseSide - so the
-        // second doesn't stack on top of the first on screen.
+        // Gap between the Shadow banner and the Mastermind banner she gets in a row when picking red - see
+        // ChooseSide - so the second doesn't stack on top of the first on screen.
         private const int SideRevealBannerGapMs = 2500;
 
-        /// <summary>"!r" in the trial chat. Silently ignored outside the offer window.</summary>
-        private static void ChooseSide(SPlayer me)
+        /// <summary>"!r" / "!w" in the trial chat. Silently ignored outside the choice window.</summary>
+        private static void ChooseSide(SPlayer me, bool red)
         {
             var room = GameRoom.Instance;
             if (!_offerOpen || room.State != EGameState.Trial || !me.IsAlive)
             {
-                V($"!r ignored: no open offer (open={_offerOpen}, state={room.State}, alive={me.IsAlive})");
+                V($"!{(red ? 'r' : 'w')} ignored: no open choice (open={_offerOpen}, state={room.State}, alive={me.IsAlive})");
                 return;
             }
 
             _offerOpen = false;
 
-            // Learning her team is the only effect: no color change, no vote rights, no change to how the
-            // round scores her - she stays Dark the whole time.
-            //  1) A private line, only she sees it.
-            //  2) The game's own native "<name> has become the Shadow." banner for each teammate, as a bonus -
-            //     always the simple Dark-branch wording, since her own color never changes. She gets TWO of
-            //     these in a row (Shadow, then Mastermind) where everyone else who ever gets one only gets
-            //     one, so they are spaced apart to stop the second from stacking on top of the first.
-            SPlayer mastermind = room.MasterMind;
-            SPlayer shadow = TrialManager.Instance?.Black;
-            int serial = _offerSerial; // snapshot: aborts the delayed banner if the trial ends first
-
-            var known = new List<string>();
-            if (shadow != null && shadow != me) known.Add($"{shadow.Name} - Shadow");
-            if (mastermind != null && mastermind != me) known.Add($"{mastermind.Name} - Mastermind");
-            if (known.Count > 0) Tell(me, string.Join(", ", known));
-            else V("!r used but no separate Mastermind/Shadow to reveal");
-
-            Plugin.Print("!r used: team revealed");
-
-            if (shadow != null && shadow != me) NotifyKnownBlack(me, shadow);
-            else V("!r used but no separate Shadow to reveal");
-
-            room.PushAfter(SideRevealBannerGapMs, delegate
+            if (red)
             {
-                if (serial != _offerSerial)
-                {
-                    V("delayed Mastermind banner skipped: trial already exited");
-                    return;
-                }
-                if (mastermind != null && mastermind != me) NotifyKnownBlack(me, mastermind);
-                else V("!r used but no separate Mastermind to reveal");
-            });
+                // Stays Dark (GameRoom.ApplyTeamResults scores Dark exactly like Black) - the only effect is
+                // learning her team:
+                //  1) A private line, only she sees it.
+                //  2) The game's own native "<name> has become the Shadow." banner for each teammate, as a
+                //     bonus - always the simple Dark-branch wording, since her own color never changes here.
+                //     She gets TWO of these in a row (Shadow, then Mastermind) where everyone else who ever
+                //     gets one only gets one, so they are spaced apart to stop the second from stacking on
+                //     top of the first before it has finished showing.
+                SPlayer mastermind = room.MasterMind;
+                SPlayer shadow = TrialManager.Instance?.Black;
+                int serial = _offerSerial; // snapshot: aborts the delayed banner if the trial ends first
 
-            // Her teammates are not told WHO she is (her Madeline skin already gives that away) or shown any
-            // map pin - just a plain heads-up that she picked their side.
-            if (mastermind != null && mastermind != me) Tell(mastermind, "Madeline chose your side.");
-            if (shadow != null && shadow != me && shadow != mastermind) Tell(shadow, "Madeline chose your side.");
+                var known = new List<string>();
+                if (shadow != null && shadow != me) known.Add($"{shadow.Name} - Shadow");
+                if (mastermind != null && mastermind != me) known.Add($"{mastermind.Name} - Mastermind");
+                if (known.Count > 0) Tell(me, string.Join(", ", known));
+                else V("red chosen but no separate Mastermind/Shadow to reveal");
+
+                Plugin.Print("Side chosen: red (stays Dark)");
+
+                if (shadow != null && shadow != me) NotifyKnownBlack(me, shadow);
+                else V("red chosen but no separate Shadow to reveal");
+
+                room.PushAfter(SideRevealBannerGapMs, delegate
+                {
+                    if (serial != _offerSerial)
+                    {
+                        V("delayed Mastermind banner skipped: trial already exited");
+                        return;
+                    }
+                    if (mastermind != null && mastermind != me) NotifyKnownBlack(me, mastermind);
+                    else V("red chosen but no separate Mastermind to reveal");
+                });
+
+                // Her teammates are not told WHO she is (her Madeline skin already gives that away) or shown any
+                // map pin - just a plain heads-up that she picked their side.
+                if (mastermind != null && mastermind != me) Tell(mastermind, "Madeline chose your side.");
+                if (shadow != null && shadow != me && shadow != mastermind) Tell(shadow, "Madeline chose your side.");
+            }
+            else
+            {
+                SetRealColor(me, EPlayerColor.White);
+                Plugin.Print("Side chosen: white");
+            }
         }
 
-        /// <summary>The trial is over (going to Survive / results): close the reveal offer window.</summary>
+        /// <summary>Really changes her Color (not a client spoof), with the game's normal side effects.</summary>
+        private static void SetRealColor(SPlayer p, EPlayerColor color)
+        {
+            p.Color = color;
+            _colorChanged = color != EPlayerColor.Dark;
+            V($"real color of '{p.Name}' set to {color}");
+        }
+
+        /// <summary>The trial is over (going to Survive / results): her real color goes back to Dark.</summary>
         internal static void OnTrialExit(GameRoom room)
         {
             _offerOpen = false;
             _offerDone = false;
             _offerSerial++;
+            if (!_colorChanged) return;
+
+            SPlayer special = room.Players.FirstOrDefault(IsSpecial);
+            if (special != null) SetRealColor(special, EPlayerColor.Dark);
+            _colorChanged = false;
         }
 
         /// <summary>
@@ -631,13 +680,14 @@ namespace DarkAccomplice
 
             bool isHelp = body.Equals("help", StringComparison.OrdinalIgnoreCase);
             bool isNumber = body.All(c => c >= '0' && c <= '9');
-            bool isReveal = body.Equals("r", StringComparison.OrdinalIgnoreCase);
-            if (!isHelp && !isNumber && !isReveal) return false; // an ordinary message, not our command
+            bool isRed = body.Equals("r", StringComparison.OrdinalIgnoreCase);
+            bool isWhite = body.Equals("w", StringComparison.OrdinalIgnoreCase);
+            if (!isHelp && !isNumber && !isRed && !isWhite) return false; // an ordinary message, not our command
 
-            // Trial: reveal her team. Always swallowed so that nobody sees "!r".
-            if (isReveal)
+            // Trial: choose a side. Always swallowed so that nobody sees "!r" / "!w".
+            if (isRed || isWhite)
             {
-                ChooseSide(sender);
+                ChooseSide(sender, isRed);
                 return true;
             }
 
