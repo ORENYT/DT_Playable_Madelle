@@ -22,6 +22,12 @@ namespace DarkAccomplice
         // While true, AllocateSkill does not reassign the ability (a skin change must not reset the cooldown).
         internal static bool SuppressAllocate;
 
+        // Always on, not configurable: the accomplice never passively learns who her Dark teammates are (no
+        // automatic Mastermind/Black reveal). The fusebox pin is NOT part of this - that stays mirrored
+        // regardless. "!r" in the trial (see ChooseSide) is a deliberate exception: it always reveals her team,
+        // this flag does not affect it. HandWeapon never touches this either; it only ever sends its own banner.
+        internal const bool IsNeutral = true;
+
         internal static bool IsSpecial(SPlayer p)
         {
             return p != null && SpecialId != None && p.PublicInfo != null && p.PublicInfo.PlayerId == SpecialId;
@@ -98,10 +104,10 @@ namespace DarkAccomplice
             Plugin.Print($"'{receiver.Name}' now knows '{teammate.Name}' (pid {teammate.PublicInfo.PlayerId}) as a teammate");
         }
 
-        /// <summary>A player just became Black (took the knife): the accomplice learns about them too.</summary>
+        /// <summary>A player just became Black (took the knife): the accomplice learns about them too (unless neutral).</summary>
         internal static void OnBecameBlack(SPlayer black)
         {
-            if (SpecialId == None) return;
+            if (SpecialId == None || IsNeutral) return;
             var room = GameRoom.Instance;
             if (room == null) return;
 
@@ -111,12 +117,36 @@ namespace DarkAccomplice
         }
 
         /// <summary>
+        /// The Mastermind handed the knife directly to a White player (Player.HandWeapon), instead of it being
+        /// picked up from the armory - a deliberate move (often to dodge blame). Always tells the accomplice,
+        /// neutral or not, and never changes IsNeutral (that is config-only, see the field). Shown as an
+        /// on-screen banner (S_SYSTEM_MESSAGE, ESystemMessageType.NewBlack - the game's own "Someone has just
+        /// become the Shadow." text), not a chat line: it appears immediately, no terminal to open, and -
+        /// unlike S_NOTIFY_BLACK - carries no player id, so it never names anyone.
+        /// </summary>
+        internal static void OnKnifeHandedOff(SPlayer mastermind, SPlayer newBlack)
+        {
+            if (SpecialId == None) return;
+            var room = GameRoom.Instance;
+            if (room == null) return;
+
+            SPlayer special = room.Players.FirstOrDefault(IsSpecial);
+            if (special == null || special == newBlack || special == mastermind || special.IsDummy || special.Session == null || !special.IsAlive) return;
+
+            room.AlertMessage(special, ESystemMessageType.NewBlack);
+            Plugin.Print($"Knife handed off by '{mastermind.Name}': accomplice notified (no names)");
+        }
+
+        /// <summary>
         /// The game shows the weapon (knife) and fusebox sabotage pins on the minimap only to the Mastermind
-        /// (S_SABOTAGE_MISSION). Mirror the same packet to the accomplice so they see the same pins.
+        /// (S_SABOTAGE_MISSION). Mirror the fusebox pin to the accomplice so she sees the same one - stays
+        /// mirrored even when IsNeutral is on; only teammate identity reveals are affected by it. The knife
+        /// (ScWeapon) is deliberately NOT mirrored to her - she never gets to see where it is, including the
+        /// 30-seconds-early spoiler BeforeScheduleFirstWeaponSpawn sends the real Mastermind (same packet).
         /// </summary>
         internal static void MirrorMissionPin(GameRoom room, ESchoolMission type, int deviceId, PosInfo pos, bool isAdd)
         {
-            if (SpecialId == None || pos == null) return;
+            if (SpecialId == None || pos == null || type == ESchoolMission.ScWeapon) return;
 
             SPlayer accomplice = room.Players.FirstOrDefault(IsSpecial);
             if (accomplice == null || accomplice == room.MasterMind || accomplice.IsDummy || accomplice.Session == null || !accomplice.IsAlive) return;
@@ -141,6 +171,149 @@ namespace DarkAccomplice
             _formEndTick = 0;
             _cooldownEndTick = 0;
             _lastDeviceId = -1;
+
+            _offerOpen = false;
+            _offerDone = false;
+            _offerSerial++;
+        }
+
+        // ---------- trial: "!r" reveals her team ----------
+        //
+        // She stays Dark always and can never vote, full stop - blocked on the HOST regardless of anything
+        // client-side (see BeforeHandleTrialEvent in Patches.cs).
+
+        private const int SideChoiceSeconds = 60;
+        private const int SideChoiceStepSeconds = 10;
+
+        private static bool _offerOpen;            // the offer window is open
+        private static bool _offerDone;            // the offer was already made in this trial
+        private static int _offerSerial;           // invalidates the window/reminders of an earlier trial or a finished reveal
+
+        /// <summary>
+        /// The trial discussion has started: within the time limit the accomplice may type "!r" to learn who
+        /// her team is. There is no way to instantly side with White either - "!r" only ever reveals her team,
+        /// it never changes her color, her vote rights (always blocked regardless, see BeforeHandleTrialEvent
+        /// in Patches.cs) or how the round scores her. A reminder repeats every 10 seconds; if time runs out
+        /// with no input, nothing happens.
+        /// </summary>
+        internal static void OnTrialDiscuss(GameRoom room)
+        {
+            if (SpecialId == None || !Plugin.Enabled.Value || _offerOpen || _offerDone) return;
+
+            SPlayer special = room.Players.FirstOrDefault(IsSpecial);
+            if (special == null || !special.IsAlive || special.IsDummy || special.Session == null)
+            {
+                V("team reveal offer skipped (no living real accomplice)");
+                return;
+            }
+
+            _offerDone = true;
+            _offerOpen = true;
+            int serial = ++_offerSerial;
+
+            AnnounceReveal(room, special, SideChoiceSeconds);
+            ScheduleRevealReminder(room, serial, SideChoiceSeconds);
+        }
+
+        private static void AnnounceReveal(GameRoom room, SPlayer special, int secondsRemaining)
+        {
+            // Normal (trial) chat, broadcast to everyone, shown as coming from the accomplice.
+            room.Broadcast(new S_CHAT_MESSAGE
+            {
+                Type = EChatType.NormalChat,
+                Text = $"INPUT !r to learn who your team is. {secondsRemaining} SECONDS REMAINING",
+                PlayerId = special.PublicInfo.PlayerId,
+                IsDead = false
+            });
+            Plugin.Print($"Team reveal reminder for '{special.Name}': {secondsRemaining}s left");
+        }
+
+        private static void ScheduleRevealReminder(GameRoom room, int serial, int secondsLeft)
+        {
+            room.PushAfter(SideChoiceStepSeconds * 1000, delegate
+            {
+                if (serial != _offerSerial || !_offerOpen) return; // trial over, or already used
+
+                int remaining = secondsLeft - SideChoiceStepSeconds;
+                if (remaining <= 0)
+                {
+                    _offerOpen = false;
+                    V("team reveal offer: time is up, nothing happens");
+                    return;
+                }
+
+                SPlayer special = room.Players.FirstOrDefault(IsSpecial);
+                if (special == null || !special.IsAlive || special.Session == null)
+                {
+                    V("team reveal reminder skipped (accomplice no longer available)");
+                    return;
+                }
+                AnnounceReveal(room, special, remaining);
+                ScheduleRevealReminder(room, serial, remaining);
+            });
+        }
+
+        // Gap between the Shadow banner and the Mastermind banner she gets in a row - see ChooseSide - so the
+        // second doesn't stack on top of the first on screen.
+        private const int SideRevealBannerGapMs = 2500;
+
+        /// <summary>"!r" in the trial chat. Silently ignored outside the offer window.</summary>
+        private static void ChooseSide(SPlayer me)
+        {
+            var room = GameRoom.Instance;
+            if (!_offerOpen || room.State != EGameState.Trial || !me.IsAlive)
+            {
+                V($"!r ignored: no open offer (open={_offerOpen}, state={room.State}, alive={me.IsAlive})");
+                return;
+            }
+
+            _offerOpen = false;
+
+            // Learning her team is the only effect: no color change, no vote rights, no change to how the
+            // round scores her - she stays Dark the whole time.
+            //  1) A private line, only she sees it.
+            //  2) The game's own native "<name> has become the Shadow." banner for each teammate, as a bonus -
+            //     always the simple Dark-branch wording, since her own color never changes. She gets TWO of
+            //     these in a row (Shadow, then Mastermind) where everyone else who ever gets one only gets
+            //     one, so they are spaced apart to stop the second from stacking on top of the first.
+            SPlayer mastermind = room.MasterMind;
+            SPlayer shadow = TrialManager.Instance?.Black;
+            int serial = _offerSerial; // snapshot: aborts the delayed banner if the trial ends first
+
+            var known = new List<string>();
+            if (shadow != null && shadow != me) known.Add($"{shadow.Name} - Shadow");
+            if (mastermind != null && mastermind != me) known.Add($"{mastermind.Name} - Mastermind");
+            if (known.Count > 0) Tell(me, string.Join(", ", known));
+            else V("!r used but no separate Mastermind/Shadow to reveal");
+
+            Plugin.Print("!r used: team revealed");
+
+            if (shadow != null && shadow != me) NotifyKnownBlack(me, shadow);
+            else V("!r used but no separate Shadow to reveal");
+
+            room.PushAfter(SideRevealBannerGapMs, delegate
+            {
+                if (serial != _offerSerial)
+                {
+                    V("delayed Mastermind banner skipped: trial already exited");
+                    return;
+                }
+                if (mastermind != null && mastermind != me) NotifyKnownBlack(me, mastermind);
+                else V("!r used but no separate Mastermind to reveal");
+            });
+
+            // Her teammates are not told WHO she is (her Madeline skin already gives that away) or shown any
+            // map pin - just a plain heads-up that she picked their side.
+            if (mastermind != null && mastermind != me) Tell(mastermind, "Madeline chose your side.");
+            if (shadow != null && shadow != me && shadow != mastermind) Tell(shadow, "Madeline chose your side.");
+        }
+
+        /// <summary>The trial is over (going to Survive / results): close the reveal offer window.</summary>
+        internal static void OnTrialExit(GameRoom room)
+        {
+            _offerOpen = false;
+            _offerDone = false;
+            _offerSerial++;
         }
 
         /// <summary>
@@ -148,6 +321,11 @@ namespace DarkAccomplice
         /// clients resolve name and picture from it when the clue is viewed, so while the accomplice is shapeshifted his
         /// clues are recorded under the player he imitates. Otherwise they would always point at Madeline.
         /// </summary>
+        // Same sentinel PlayerId the game's own Fusebox.cs hardcodes (Define.EWhatState.Mastermind -> 11037,
+        // "WhoMastermind" in the proposition sentence/"who" lookup) - not a real player, so it can never
+        // collide with an actual PlayerId.
+        private const int MastermindSentinelId = 11037;
+
         internal static int ClueOwnerId(SPlayer p)
         {
             int own = p.PublicInfo.PlayerId;
@@ -155,6 +333,15 @@ namespace DarkAccomplice
             {
                 V($"clue recorded under pid {_formTargetId} (imitated player) instead of pid {own}");
                 return _formTargetId;
+            }
+            if (IsSpecial(p))
+            {
+                // Not shapeshifted right now: a clue recorded under her own pid would render as Madeline, who
+                // has no portrait art for that UI (the same problem Fusebox's own hardcoded 11037 sidesteps by
+                // design). Reuse that exact sentinel so all her un-shapeshifted clues render the same generic,
+                // working way Fusebox's already do.
+                V($"clue recorded under sentinel {MastermindSentinelId} (WhoMastermind) instead of Madeline's own pid {own}");
+                return MastermindSentinelId;
             }
             return own;
         }
@@ -275,18 +462,9 @@ namespace DarkAccomplice
                 _replyDeviceId = saved;
             }
 
-            // Right after the list is sent, the Mastermind and the accomplice learn about each other
-            // (black pin on the minimap, pink name).
-            SPlayer mastermind = room.MasterMind;
-            if (mastermind != null && mastermind != special)
-            {
-                NotifyKnownBlack(special, mastermind);   // the accomplice learns who the Mastermind is
-                NotifyKnownBlack(mastermind, special);   // the Mastermind learns who the accomplice is
-            }
-            else
-            {
-                V("teammate notification skipped (no separate Mastermind)");
-            }
+            // She is always neutral (see IsNeutral): no automatic teammate notification here. "!r" in the
+            // trial (ChooseSide) is the only way she ever learns her team.
+            V("teammate notification skipped (accomplice is always neutral)");
         }
 
         /// <summary>Back in the lobby: reset the accomplice and restore the real nickname. The Madeline skin stays.</summary>
@@ -433,16 +611,35 @@ namespace DarkAccomplice
         /// <summary>Returns true if the message was an accomplice command (it must not be relayed to the chat).</summary>
         internal static bool TryHandle(SPlayer sender, string text, int deviceId = -1, bool isSecret = false)
         {
-            if (!IsSpecial(sender) || string.IsNullOrEmpty(text) || text[0] != '!') return false;
+            if (!IsSpecial(sender) || string.IsNullOrEmpty(text)) return false;
+
+            // Some IMEs (e.g. Chinese input methods) insert stray spaces around "!" and the argument
+            // (" !3", "! 3", "!  w" ...); Trim() also covers full-width spaces (U+3000), which some IMEs use.
+            text = text.Trim();
+            if (text.Length == 0) return false;
+
+            // CJK IMEs in "full-width punctuation" mode turn "!" into "！" (U+FF01) and can do the same to digits
+            // (e.g. "3" -> "３", U+FF10-U+FF19); accept both so those players do not silently lose the command.
+            char first = text[0];
+            if (first != '!' && first != '！') return false;
 
             string body = text.Substring(1).Trim();
+            body = NormalizeFullWidthDigits(body);
             V($"chat from accomplice: '{text}' device={deviceId} secret={isSecret} roomState={GameRoom.Instance.State} " +
               $"playerState={sender.State} alive={sender.IsAlive} migrating={GameRoom.Instance.IsMigrating} transitioning={GameRoom.Instance.IsTransitioning}");
             if (body.Length == 0) return false;
 
             bool isHelp = body.Equals("help", StringComparison.OrdinalIgnoreCase);
             bool isNumber = body.All(c => c >= '0' && c <= '9');
-            if (!isHelp && !isNumber) return false; // an ordinary message, not our command
+            bool isReveal = body.Equals("r", StringComparison.OrdinalIgnoreCase);
+            if (!isHelp && !isNumber && !isReveal) return false; // an ordinary message, not our command
+
+            // Trial: reveal her team. Always swallowed so that nobody sees "!r".
+            if (isReveal)
+            {
+                ChooseSide(sender);
+                return true;
+            }
 
             // "!help" is executed only by the plugin itself (once, automatically, 5 s after Survive starts).
             // Nobody can call it manually: the message is silently swallowed.
@@ -477,6 +674,21 @@ namespace DarkAccomplice
             {
                 _replyDeviceId = -1;
             }
+        }
+
+        /// <summary>Turns full-width digits (U+FF10-U+FF19, "０"-"９") into plain ASCII digits.</summary>
+        private static string NormalizeFullWidthDigits(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            char[] chars = null;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c < '０' || c > '９') continue;
+                chars ??= s.ToCharArray();
+                chars[i] = (char)('0' + (c - '０'));
+            }
+            return chars != null ? new string(chars) : s;
         }
 
         private static void Impersonate(SPlayer me, int number)

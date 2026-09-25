@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
@@ -29,6 +30,13 @@ namespace DarkAccomplice
         [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.ChangeGameState), new[] { typeof(EGameState) })]
         private static void BeforeChangeGameState(GameRoom __instance, EGameState state)
         {
+            // Leaving the trial: the accomplice's real color goes back to Dark.
+            if (__instance.State == EGameState.Trial && state != EGameState.Trial)
+            {
+                try { Accomplice.OnTrialExit(__instance); }
+                catch (Exception e) { Plugin.Log.LogError($"OnTrialExit failed: {e}"); }
+            }
+
             // Round over (win or loss): be Madeline with the real nickname by the results screen.
             if (state == EGameState.TotalResult)
             {
@@ -129,6 +137,85 @@ namespace DarkAccomplice
             catch (Exception e) { Plugin.Log.LogError($"OnBecameBlack failed: {e}"); }
         }
 
+        // 14) The Mastermind handed the knife directly to someone (Player.HandWeapon) instead of it being picked up
+        // from the armory - tell the accomplice. HandWeapon no-ops silently on several guards (wrong color, dead
+        // target, target already has a weapon, ...), so success is checked afterwards instead of relying on the
+        // call alone.
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(SPlayer), nameof(SPlayer.HandWeapon))]
+        private static void AfterHandWeapon(SPlayer __instance, int targetId)
+        {
+            try
+            {
+                var room = GameRoom.Instance;
+                SPlayer target = room?.Players.FirstOrDefault(p => p.PublicInfo.PlayerId == targetId);
+                if (target == null || target.Color != EPlayerColor.Black || target.Weapon == null) return; // HandWeapon no-op'd
+
+                Accomplice.OnKnifeHandedOff(__instance, target);
+            }
+            catch (Exception e) { Plugin.Log.LogError($"OnKnifeHandedOff failed: {e}"); }
+        }
+
+        // 16) The armory's "Dark" pickup (Armory.AcquireWeaponDark, EArmoryInteractType.SelectBlack) only checks
+        // Color == Dark - meant for the Mastermind to grab the knife himself (e.g. to hand it off by hand), but
+        // the accomplice is Dark too and would otherwise qualify. She can never use the knife anyway (Attack
+        // requires Color == Black), so if she held it the weapon would just be stuck, unusable by anyone -
+        // block her from taking it at all. The normal White-only AcquireWeapon already rejects her (she is
+        // never White), so this is the only path that needs the guard.
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(Server.Game.Armory), "AcquireWeaponDark")]
+        private static bool BeforeAcquireWeaponDark(SPlayer player)
+        {
+            if (!Accomplice.IsSpecial(player)) return true;
+            Plugin.Print($"Armory pickup blocked for accomplice '{player.Name}' (she can never hold the knife)");
+            return false;
+        }
+
+        // Reflection into DeviceManager internals the vanilla game keeps private - see BeforeScheduleFirstWeaponSpawn.
+        private static readonly FieldInfo ArmoriesField = AccessTools.Field(typeof(Server.Game.DeviceManager), "_armories");
+        private static readonly MethodInfo ArmoryIndexSetter = AccessTools.PropertySetter(typeof(Server.Game.DeviceManager), nameof(Server.Game.DeviceManager.ArmoryIndex));
+
+        // 17) With "Weapon Spawn Delay" on, the game waits 30s before the first knife spawn and only picks (and
+        // reveals) the armory at the very end of that wait, inside the private DeviceManager.SpawnFirstWeapon
+        // (Util.Shuffle(_armories, ...); ArmoryIndex = 0; SpawnNextWeapon(isInit: true);). Do that exact same
+        // shuffle right away instead, tell the real Mastermind the location immediately, then run the actual
+        // spawn (SpawnNextWeapon, public) ourselves once the delay elapses - using the SAME already-shuffled
+        // order (no second shuffle), so the location announced early is guaranteed to be the one that opens.
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(Server.Game.DeviceManager), nameof(Server.Game.DeviceManager.ScheduleFirstWeaponSpawn))]
+        private static bool BeforeScheduleFirstWeaponSpawn(Server.Game.DeviceManager __instance, int delaySecond)
+        {
+            if (!Plugin.Enabled.Value || !Plugin.EarlyKnifeSpoiler.Value || delaySecond <= 0 || ArmoriesField == null || ArmoryIndexSetter == null) return true;
+
+            try
+            {
+                var armories = ArmoriesField.GetValue(__instance) as List<Server.Game.Armory>;
+                if (armories == null || armories.Count == 0) return true;
+
+                Util.Shuffle(armories, armories.Count);
+                ArmoryIndexSetter.Invoke(__instance, new object[] { 0 });
+
+                SPlayer mastermind = GameRoom.Instance.MasterMind;
+                if (mastermind != null && mastermind.IsAlive)
+                {
+                    GameRoom.Instance.SendSabotageMission(ESchoolMission.ScWeapon, armories[0].ID, armories[0].DeviceInfo.Pos, isAdd: true);
+                    Plugin.Print($"Mastermind '{mastermind.Name}' told the first knife spawn location {delaySecond}s early");
+                }
+
+                GameRoom.Instance.PushAfter(delaySecond * 1000, delegate
+                {
+                    if (__instance.CurrentArmory == null) __instance.SpawnNextWeapon(isInit: true);
+                });
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogError($"BeforeScheduleFirstWeaponSpawn failed: {e}");
+                return true; // fall back to vanilla behaviour on any failure
+            }
+
+            return false; // fully handled ourselves
+        }
+
         // 11) Minimap pins: the game sends the knife and fusebox pins only to the Mastermind, mirror them to the accomplice.
         [HarmonyPostfix]
         [HarmonyPatch(typeof(GameRoom), nameof(GameRoom.SendSabotageMission))]
@@ -136,6 +223,32 @@ namespace DarkAccomplice
         {
             try { Accomplice.MirrorMissionPin(__instance, type, deviceId, pos, isAdd); }
             catch (Exception e) { Plugin.Log.LogError($"MirrorMissionPin failed: {e}"); }
+        }
+
+        // 13) The accomplice must never be able to vote for a player (see the big comment in Accomplice.cs). The
+        // game only blocks voting client-side for Color == Dark, and "!w"/"!r" give her a real White/Black color,
+        // so the real block has to live here, on the host. SKIP stays allowed - only picking a name is blocked.
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(TrialManager), nameof(TrialManager.HandleEvent))]
+        private static bool BeforeHandleTrialEvent(SPlayer player, Packet packet)
+        {
+            if (!Accomplice.IsSpecial(player)) return true;
+            if (!(packet?.Pkt is C_HANDLE_TRIAL { Type: C_ETrialEventType.VotePlayer })) return true; // SKIP and everything else goes through
+
+            Plugin.Print($"Vote from '{player.Name}' blocked (accomplice can never vote for a player)");
+            return false;
+        }
+
+        // 12) The trial discussion has started: offer the accomplice a choice of side (white / red).
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(TrialManager), nameof(TrialManager.State), MethodType.Setter)]
+        private static void AfterTrialState(ETrialState value)
+        {
+            if (value != ETrialState.Discuss) return;
+            var room = GameRoom.Instance;
+            if (room == null || room.State != EGameState.Trial) return;
+            try { Accomplice.OnTrialDiscuss(room); }
+            catch (Exception e) { Plugin.Log.LogError($"OnTrialDiscuss failed: {e}"); }
         }
 
         // 9) Kill limit: the game gives Black 1 kill in rounds with fewer than 6 players and 2 (double kill) with 6 or more.

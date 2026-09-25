@@ -20,7 +20,7 @@ namespace DarkAccomplice
     {
         public const string PluginGuid = "com.oreny.darkaccomplice";
         public const string PluginName = "DarkAccomplice";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.2.5";
 
         // Fixed defaults (intentionally not configurable).
         internal const int MinPlayers = 3;                                    // minimum real players to pick an accomplice
@@ -30,6 +30,7 @@ namespace DarkAccomplice
 
         internal static ConfigEntry<bool> Enabled;
         internal static ConfigEntry<bool> ForceSingleKill;
+        internal static ConfigEntry<bool> EarlyKnifeSpoiler;
         internal static ConfigEntry<bool> HostIsAccomplice;
         internal static ConfigEntry<bool> ShowExtendedOutput;
         internal static ConfigEntry<int> FreezeDuration;
@@ -55,6 +56,10 @@ namespace DarkAccomplice
 
             ForceSingleKill = Config.Bind("General", "Force single kill", false,
                 "Force the Black kill limit to 1. By default the game allows a double kill in rounds with 6 or more players");
+
+            EarlyKnifeSpoiler = Config.Bind("General", "Early Knife Spoiler", true,
+                "With 'Weapon Spawn Delay' on (a 30s pause before the first knife appears), tell the real Mastermind where it will spawn "
+                + "immediately instead of making him wait out the full delay to find out.");
 
             HostIsAccomplice = Config.Bind("Debug", "Host Is Accomplice", false,
                 "TEST: the host always becomes the accomplice (starts as Madeline). Handy for solo testing together with SoloStart");
